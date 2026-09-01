@@ -44,97 +44,74 @@ async function canConnect() {
   });
 }
 
-async function run() {
-  console.log("\n  Race Condition Test\n");
+const ITERATIONS = 20;
 
-  const dbAvailable = await canConnect();
-  if (!dbAvailable) {
-    console.log(
-      "  SKIP: PostgreSQL not available (need postgres_js_test db/user)",
-    );
-    console.log(
-      "  Set up with: createuser postgres_js_test && createdb -O postgres_js_test postgres_js_test\n",
-    );
-    process.exit(1);
-  }
-
+async function runOnce() {
   const errors = [];
-
-  const sql = postgres({
-    ...pgOptions,
-    max: 3,
-    max_pipeline: 2,
-  });
+  const sql = postgres({ ...pgOptions, max: 3, max_pipeline: 2 });
 
   try {
     await sql`SELECT 1`;
 
-    // Hold ALL 3 connections busy
     const blockers = Array.from({ length: 3 }, () =>
-      sql`SELECT pg_sleep(1)`.catch((e) => {
-        errors.push(e);
-        return e;
-      }),
+      sql`SELECT pg_sleep(0.5)`.catch((e) => { errors.push(e); return e; }),
     );
     await delay(10);
 
-    // Fire regular queries to fill pipelines, then BEGINs
     const queries = Array.from({ length: 6 }, (_, i) =>
-      sql`SELECT ${i}::int`.catch((e) => {
-        errors.push(e);
-        return e;
-      }),
+      sql`SELECT ${i}::int`.catch((e) => { errors.push(e); return e; }),
     );
     const begins = Array.from({ length: 5 }, (_, i) =>
-      sql
-        .begin(async (tx) => {
-          await tx`SELECT ${i}::int as n`;
-          return "ok";
-        })
-        .catch((e) => {
-          errors.push(e);
-          return e;
-        }),
+      sql.begin(async (tx) => {
+        await tx`SELECT ${i}::int as n`;
+        return "ok";
+      }).catch((e) => { errors.push(e); return e; }),
     );
 
-    // Wait for all to settle with a timeout to prevent hanging
     await Promise.allSettled([
       ...blockers,
-      ...queries.map((p) =>
-        Promise.race([
-          p,
-          delay(15000).then(() => {
-            throw new Error("timeout");
-          }),
-        ]),
-      ),
-      ...begins.map((p) =>
-        Promise.race([
-          p,
-          delay(15000).then(() => {
-            throw new Error("timeout");
-          }),
-        ]),
-      ),
+      ...queries.map((p) => Promise.race([p, delay(10000).then(() => { throw new Error("timeout"); })])),
+      ...begins.map((p) => Promise.race([p, delay(10000).then(() => { throw new Error("timeout"); })])),
     ]);
-
+  } finally {
     await sql.end({ timeout: 2 }).catch(() => {});
+  }
 
-    const unsafeErrors = errors.filter((e) => e.code === "UNSAFE_TRANSACTION");
+  return errors.filter((e) => e.code === "UNSAFE_TRANSACTION").length;
+}
 
-    if (unsafeErrors.length > 0) {
-      console.log(
-        `  \x1b[31mFAIL\x1b[0m Got ${unsafeErrors.length} UNSAFE_TRANSACTION error(s)\n`,
-      );
-      process.exit(1);
-    } else {
-      console.log("  \x1b[32mPASS\x1b[0m No UNSAFE_TRANSACTION errors\n");
-      process.exit(0);
-    }
-  } catch (e) {
-    console.error("  Error:", e.message);
-    await sql.end({ timeout: 1 }).catch(() => {});
+async function run() {
+  console.log("\n  Race Condition Test");
+  console.log(`  Running scenario ${ITERATIONS} times to expose the race\n`);
+
+  const dbAvailable = await canConnect();
+  if (!dbAvailable) {
+    console.log("  SKIP: PostgreSQL not available (need postgres_js_test db/user)");
+    console.log("  Set up with: createuser postgres_js_test && createdb -O postgres_js_test postgres_js_test\n");
     process.exit(1);
+  }
+
+  let totalUnsafe = 0;
+  let iterationsWithErrors = 0;
+
+  for (let i = 0; i < ITERATIONS; i++) {
+    const count = await runOnce();
+    if (count > 0) {
+      iterationsWithErrors++;
+      totalUnsafe += count;
+      process.stdout.write("\x1b[31mF\x1b[0m");
+    } else {
+      process.stdout.write("\x1b[32m.\x1b[0m");
+    }
+  }
+  console.log("");
+
+  if (totalUnsafe > 0) {
+    console.log(`\n  \x1b[31mFAIL\x1b[0m ${totalUnsafe} UNSAFE_TRANSACTION error(s) across ${iterationsWithErrors}/${ITERATIONS} iterations\n`);
+    process.exit(1);
+  } else {
+    console.log(`\n  \x1b[32mPASS\x1b[0m No UNSAFE_TRANSACTION errors across ${ITERATIONS} iterations\n`);
+    process.exit(0);
   }
 }
 
