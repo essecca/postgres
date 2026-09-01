@@ -1,25 +1,5 @@
-/**
- * Race Condition Test for UNSAFE_TRANSACTION in postgres.js
- *
- * Root cause: execute()'s short-circuit evaluation in connection.js skips
- * the onexecute callback (which sets connection.reserved) when
- * sent.length >= max_pipeline during query pipelining.
- *
- * Strategy: hold ALL connections busy with pg_sleep, then fire queries +
- * BEGINs. With max_pipeline: 2, the first pipelined query keeps the
- * connection in the busy queue. When a BEGIN is pipelined as the 2nd query,
- * sent.length >= max_pipeline → onexecute skipped → UNSAFE_TRANSACTION.
- *
- * Should FAIL on unfixed code and PASS after the fix.
- *
- * Usage:
- *   export PATH="/usr/local/opt/postgresql@15/bin:$PATH"
- *   node tests/race-condition.js
- *
- * Setup:
- *   createuser postgres_js_test
- *   createdb -O postgres_js_test postgres_js_test
- */
+// Reproduces UNSAFE_TRANSACTION under concurrent sql.begin().
+// See https://github.com/porsager/postgres/issues/823
 
 import postgres from "../src/index.js";
 

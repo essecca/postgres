@@ -174,11 +174,6 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
         && !q.describeFirst
         && !q.cursorFn
         && sent.length < max_pipeline
-        //     return write(toBuffer(q))
-        // && !q.describeFirst
-        // && !q.cursorFn
-        // && sent.length < max_pipeline
-        // && (!q.options.onexecute || q.options.onexecute(connection))
     } catch (error) {
       sent.length === 0 && write(Sync)
       errored(error)
